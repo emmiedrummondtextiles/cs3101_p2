@@ -1,85 +1,101 @@
--- 03_views.sql
--- Create the required views for CS3101 P2
+-- views.sql: define the three required views
 
-USE cs3101p2;
-
--- 1. trainLEV: all services for train 170406
+-- 1. Services on which train 170406 operates (trainLEV)
 CREATE OR REPLACE VIEW trainLEV AS
 SELECT
-  s.hc,
-  r.orig                AS orig,
-  CONCAT(s.dh, s.dm)    AS dep
+    s.hc,
+    r.orig   AS orig,
+    MAKETIME(s.dh, s.dm, 0) AS dep
 FROM service s
-JOIN route   r         ON s.hc = r.hc
+JOIN route r USING (hc)
 WHERE s.uid = '170406'
-ORDER BY s.dh, s.dm;
+ORDER BY dep;
 
--- 2. scheduleEDB: all services departing Edinburgh (EDB)
+-- 2. Services departing Edinburgh (EDB) (scheduleEDB)
 CREATE OR REPLACE VIEW scheduleEDB AS
 SELECT
-  s.hc,
-  CONCAT(s.dh, s.dm)             AS dep,
-  s.pl                          AS pl,
-  COALESCE(next_st.code, p.loc) AS dest,
-  (
-    SELECT COUNT(*)
+    s.hc,
+    MAKETIME(s.dh, s.dm, 0)                              AS dep,
+    st.pl                                                 AS pl,
+    (
+      SELECT p2.loc
+      FROM plan p2
+      WHERE p2.hc = s.hc
+        AND p2.frm = 'EDB'
+      ORDER BY p2.ddh, p2.ddm
+      LIMIT 1
+    )                                                     AS dest,
+    (
+      SELECT COUNT(*)
       FROM coach c
-     WHERE c.uid = s.uid
-  )                              AS len,
-  s.toc
+      WHERE c.uid = s.uid
+    )                                                     AS len,
+    s.toc                                                 AS toc
 FROM service s
-JOIN route    r         ON s.hc = r.hc
-JOIN station  st_orig   ON r.orig = st_orig.loc
-LEFT JOIN plan      p         ON p.hc = s.hc AND p.frm = r.orig
-LEFT JOIN station   next_st   ON next_st.loc = p.loc
-WHERE st_orig.code = 'EDB'
-ORDER BY s.dh, s.dm;
-
--- 3. serviceEDBDEE: sequence of stops for the 18:59 1L27 service
-CREATE OR REPLACE VIEW serviceEDBDEE AS
--- origin row
-SELECT
-  r.orig                          AS loc,
-  st_o.code                       AS stn,
-  s.pl                            AS pl,
-  NULL                            AS arr,
-  CONCAT(s.dh, s.dm)              AS dep
-FROM service s
-JOIN route    r    ON s.hc = r.hc
-JOIN station  st_o ON r.orig = st_o.loc
-WHERE s.hc = '1L27'
-  AND s.dh = '18'
-  AND s.dm = '59'
-
-UNION ALL
-
--- intermediate stops where the train stops
-SELECT
-  p.loc                           AS loc,
-  st_i.code                       AS stn,
-  sp.pl                           AS pl,
-  CONCAT(LPAD(sp.adh, 2, '0'), LPAD(sp.adm, 2, '0')) AS arr,
-  CONCAT(LPAD(p.ddh, 2, '0'), LPAD(p.ddm, 2, '0'))   AS dep
-FROM plan p
-JOIN service s ON p.hc = s.hc
-  AND s.hc = '1L27' AND s.dh = '18' AND s.dm = '59'
-JOIN stop    sp ON sp.hc = p.hc AND sp.frm = p.frm AND sp.loc = p.loc
-JOIN station st_i ON p.loc = st_i.loc
-
-UNION ALL
-
--- destination stop (infinite departure differential)
-SELECT
-  p.loc                           AS loc,
-  st_d.code                       AS stn,
-  sp.pl                           AS pl,
-  CONCAT(LPAD(sp.adh, 2, '0'), LPAD(sp.adm, 2, '0')) AS arr,
-  NULL                            AS dep
-FROM plan p
-JOIN service s ON p.hc = s.hc
-  AND s.hc = '1L27' AND s.dh = '18' AND s.dm = '59'
-JOIN stop    sp ON sp.hc = p.hc AND sp.frm = p.frm AND sp.loc = p.loc
-JOIN station st_d ON p.loc = st_d.loc
-WHERE p.ddh = 'ω'
-
+JOIN route r USING (hc)
+LEFT JOIN stop st
+  ON st.hc = s.hc
+ AND st.loc = 'EDB'
+WHERE r.orig = 'EDB'
 ORDER BY dep;
+
+-- 3. Sequence of locations for the 18:59 1L27 service (serviceEDBDEE)
+CREATE OR REPLACE VIEW serviceEDBDEE AS
+SELECT locs.loc                                           AS loc,
+       stn.code                                          AS stn,
+       locs.pl                                            AS pl,
+       MAKETIME(locs.adh, locs.adm, 0)                   AS arr,
+       MAKETIME(locs.ddh, locs.ddm, 0)                   AS dep
+FROM (
+    -- origin
+    SELECT
+      r.orig                           AS loc,
+      NULL                             AS ddh,
+      NULL                             AS ddm,
+      NULL                             AS adh,
+      NULL                             AS adm,
+      NULL                             AS pl,
+      MAKETIME(s.dh, s.dm, 0)         AS dep_order
+    FROM service s
+    JOIN route r USING (hc)
+    WHERE s.hc = '1L27' AND s.dh = 18 AND s.dm = 59
+
+    UNION ALL
+
+    -- intermediate stops
+    SELECT
+      p.loc                            AS loc,
+      p.ddh                            AS ddh,
+      p.ddm                            AS ddm,
+      st.adh                           AS adh,
+      st.adm                           AS adm,
+      st.pl                            AS pl,
+      MAKETIME(p.ddh, p.ddm, 0)       AS dep_order
+    FROM plan p
+    JOIN stop st
+      ON st.hc = p.hc
+     AND st.loc = p.loc
+    WHERE p.hc = '1L27' AND NOT p.ddh IS NULL
+
+    UNION ALL
+
+    -- destination
+    SELECT
+      p2.loc                           AS loc,
+      NULL                             AS ddh,
+      NULL                             AS ddm,
+      st2.adh                          AS adh,
+      st2.adm                          AS adm,
+      NULL                             AS pl,
+      MAKETIME(st2.adh, st2.adm, 0)   AS dep_order
+    FROM plan p2
+    JOIN stop st2
+      ON st2.hc = p2.hc
+     AND st2.loc = p2.loc
+    WHERE p2.hc = '1L27'
+      AND p2.ddh IS NULL
+) AS locs
+LEFT JOIN station stn
+  ON stn.loc = locs.loc
+ORDER BY locs.dep_order;
+
