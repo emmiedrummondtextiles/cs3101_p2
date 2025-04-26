@@ -4,6 +4,10 @@
 USE emd9_cs3101_p2_1;
 DELIMITER $$
 
+-- Drop existing procedures if present
+DROP PROCEDURE IF EXISTS proc_new_service$$
+DROP PROCEDURE IF EXISTS proc_add_loc$$
+
 -- 1. proc_new_service:
 --    Inputs: origin station CRS code (e.g. 'EDB'), origin platform, departure time (HHMM), train ID, TOC
 CREATE PROCEDURE proc_new_service(
@@ -122,5 +126,4 @@ BEGIN
 END$$
 
 DELIMITER ;
-
 
