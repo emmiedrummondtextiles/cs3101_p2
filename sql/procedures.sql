@@ -1,88 +1,67 @@
--- 04_procedures.sql
--- Procedures for CS3101 P2: drop & recreate procedures; paste directly into mysql prompt
+-- procedures.sql: define the two required stored procedures
 
-USE emd9_cs3101_p2_1;
 DELIMITER $$
 
--- Drop existing procedures if present
-DROP PROCEDURE IF EXISTS proc_new_service$$
-DROP PROCEDURE IF EXISTS proc_add_loc$$
-
--- 1. proc_new_service:
-CREATE PROCEDURE proc_new_service(
-  IN p_orig_code CHAR(3),
-  IN p_pl         INT,
-  IN p_dep        CHAR(4),
-  IN p_train      CHAR(6),
-  IN p_toc        VARCHAR(2)
+-- 1. proc_new_service: add a new service with auto-generated headcode
+CREATE OR REPLACE PROCEDURE proc_new_service(
+    IN p_orig CHAR(3),          -- origin station code
+    IN p_plat INT,              -- origin platform number
+    IN p_dh INT,                -- departure hour (24h)
+    IN p_dm INT,                -- departure minute
+    IN p_uid CHAR(6),           -- train unit ID
+    IN p_toc VARCHAR(2)         -- train operating company
 )
 BEGIN
-  DECLARE p_orig_loc VARCHAR(100);
-  DECLARE new_hc      CHAR(4);
+    DECLARE newhc CHAR(4);
+    DECLARE maxnum INT;
+    -- generate a simple sequential headcode: '1X' + two-digit sequence
+    SELECT COALESCE(MAX(CAST(SUBSTRING(hc,3,2) AS UNSIGNED)), 0)
+      INTO maxnum
+      FROM service;
+    SET maxnum = maxnum + 1;
+    SET newhc = CONCAT('1','X', LPAD(maxnum,2,'0'));
 
-  SELECT loc INTO p_orig_loc
-    FROM station
-   WHERE code = p_orig_code
-   LIMIT 1;
-  IF p_orig_loc IS NULL THEN
-    SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'Invalid station code';
-  END IF;
+    -- insert into route (assumes route(orig) is only required columns)
+    INSERT INTO route(hc, orig)
+    VALUES(newhc, p_orig);
 
-  SELECT CONCAT(
-           '1', LEFT(p_orig_loc,1),
-           LPAD(COALESCE(MAX(CAST(RIGHT(hc,2) AS UNSIGNED)),0)+1,2,'0')
-         ) INTO new_hc
-    FROM route
-   WHERE LEFT(hc,1) = '1'
-     AND SUBSTR(hc,2,1) = LEFT(p_orig_loc,1);
-
-  INSERT INTO route(hc, orig) VALUES(new_hc, p_orig_loc);
-  INSERT INTO service(hc, dh, dm, pl, uid, toc)
-  VALUES(new_hc, LEFT(p_dep,2), RIGHT(p_dep,2), p_pl, p_train, p_toc);
+    -- insert into service
+    INSERT INTO service(hc, dh, dm, pl, uid, toc)
+    VALUES(newhc, p_dh, p_dm, p_plat, p_uid, p_toc);
 END$$
 
--- 2. proc_add_loc:
-CREATE PROCEDURE proc_add_loc(
-  IN p_hc        CHAR(4),
-  IN p_loc_name  VARCHAR(100),
-  IN p_prev_name VARCHAR(100),
-  IN p_dd        CHAR(4),
-  IN p_ad        CHAR(4),
-  IN p_pl        INT
+-- 2. proc_add_loc: add a planned location (and optional stop) to a route
+CREATE OR REPLACE PROCEDURE proc_add_loc(
+    IN p_hc CHAR(4),         -- headcode of route
+    IN p_loc VARCHAR(100),   -- location being added
+    IN p_prev_loc VARCHAR(100), -- preceding location in route
+    IN p_ddh INT,             -- departure differential hours
+    IN p_ddm INT,             -- departure differential minutes
+    IN p_adh INT,             -- arrival differential hours (nullable)
+    IN p_adm INT,             -- arrival differential minutes (nullable)
+    IN p_plat INT             -- platform number (nullable)
 )
 BEGIN
-  DECLARE ddh CHAR(2);
-  DECLARE ddm CHAR(2);
-  DECLARE adh CHAR(2);
-  DECLARE adm CHAR(2);
-
-  IF NOT EXISTS(SELECT 1 FROM route WHERE hc = p_hc) THEN
-    SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'Route not found';
-  END IF;
-  IF NOT EXISTS(SELECT 1 FROM location WHERE loc = p_loc_name) THEN
-    SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'Location not found';
-  END IF;
-  IF NOT EXISTS(SELECT 1 FROM plan WHERE hc = p_hc AND loc = p_prev_name) THEN
-    SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'Preceding location not in route';
-  END IF;
-
-  SET ddh = LEFT(p_dd,2);
-  SET ddm = RIGHT(p_dd,2);
-  IF p_ad IS NOT NULL OR p_pl IS NOT NULL THEN
-    IF p_ad IS NULL OR p_pl IS NULL THEN
-      SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'Both arrival differential and platform required';
+    -- validate route and location exist
+    IF NOT EXISTS(SELECT 1 FROM route WHERE hc = p_hc) THEN
+        SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'Route (headcode) does not exist';
     END IF;
-    SET adh = LEFT(p_ad,2);
-    SET adm = RIGHT(p_ad,2);
-  END IF;
+    IF NOT EXISTS(SELECT 1 FROM location WHERE loc = p_loc) THEN
+        SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'Location does not exist';
+    END IF;
+    IF NOT EXISTS(SELECT 1 FROM plan WHERE hc = p_hc AND loc = p_prev_loc) THEN
+        SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'Preceding location not in route';
+    END IF;
 
-  INSERT INTO plan(hc, frm, loc, ddh, ddm)
-  VALUES(p_hc, p_prev_name, p_loc_name, ddh, ddm);
+    -- insert into plan
+    INSERT INTO plan(hc, frm, loc, ddh, ddm)
+    VALUES(p_hc, p_prev_loc, p_loc, p_ddh, p_ddm);
 
-  IF p_ad IS NOT NULL THEN
-    INSERT INTO stop(hc, frm, loc, adh, adm, pl)
-    VALUES(p_hc, p_prev_name, p_loc_name, adh, adm, p_pl);
-  END IF;
+    -- if arrival and platform provided, insert into stop
+    IF p_adh IS NOT NULL AND p_adm IS NOT NULL AND p_plat IS NOT NULL THEN
+        INSERT INTO stop(hc, frm, loc, adh, adm, pl)
+        VALUES(p_hc, p_prev_loc, p_loc, p_adh, p_adm, p_plat);
+    END IF;
 END$$
 
 DELIMITER ;
