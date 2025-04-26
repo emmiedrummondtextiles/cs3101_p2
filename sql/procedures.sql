@@ -2,7 +2,7 @@
 
 DELIMITER $$
 
--- 1. proc_new_service: add a new service with auto-generated headcode
+-- 1. proc_new_service: add a new service with auto-generated headcode matching Headcode domain
 CREATE OR REPLACE PROCEDURE proc_new_service(
     IN p_orig CHAR(3),      -- origin station code
     IN p_plat INT,          -- origin platform number
@@ -29,7 +29,7 @@ BEGIN
     UNTIL exists_count = 0
     END REPEAT;
 
-    -- insert into route (route only needs headcode and origin)
+    -- insert into route
     INSERT INTO route(hc, orig)
     VALUES(newhc, p_orig);
 
@@ -73,4 +73,5 @@ BEGIN
 END$$
 
 DELIMITER ;
+
 
