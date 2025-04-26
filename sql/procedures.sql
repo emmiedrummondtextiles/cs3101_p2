@@ -4,24 +4,32 @@ DELIMITER $$
 
 -- 1. proc_new_service: add a new service with auto-generated headcode
 CREATE OR REPLACE PROCEDURE proc_new_service(
-    IN p_orig CHAR(3),          -- origin station code
-    IN p_plat INT,              -- origin platform number
-    IN p_dh INT,                -- departure hour (24h)
-    IN p_dm INT,                -- departure minute
-    IN p_uid CHAR(6),           -- train unit ID
-    IN p_toc VARCHAR(2)         -- train operating company
+    IN p_orig CHAR(3),      -- origin station code
+    IN p_plat INT,          -- origin platform number
+    IN p_dh INT,            -- departure hour (24h)
+    IN p_dm INT,            -- departure minute
+    IN p_uid CHAR(6),       -- train unit ID
+    IN p_toc CHAR(2)        -- train operating company
 )
 BEGIN
     DECLARE newhc CHAR(4);
-    DECLARE maxnum INT;
-    -- generate a simple sequential headcode: '1X' + two-digit sequence
-    SELECT COALESCE(MAX(CAST(SUBSTRING(hc,3,2) AS UNSIGNED)), 0)
-      INTO maxnum
-      FROM service;
-    SET maxnum = maxnum + 1;
-    SET newhc = CONCAT('1','X', LPAD(maxnum,2,'0'));
+    DECLARE exists_count INT;
 
-    -- insert into route (assumes route(orig) is only required columns)
+    -- generate a random headcode matching [0-9][A-Z][0-9][0-9]
+    REPEAT
+        SET newhc = CONCAT(
+            FLOOR(RAND() * 10),
+            CHAR(FLOOR(RAND() * 26) + 65),
+            FLOOR(RAND() * 10),
+            FLOOR(RAND() * 10)
+        );
+        SELECT COUNT(*) INTO exists_count
+          FROM service
+         WHERE hc = newhc;
+    UNTIL exists_count = 0
+    END REPEAT;
+
+    -- insert into route (route only needs headcode and origin)
     INSERT INTO route(hc, orig)
     VALUES(newhc, p_orig);
 
@@ -65,3 +73,4 @@ BEGIN
 END$$
 
 DELIMITER ;
+
