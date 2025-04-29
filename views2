@@ -1,0 +1,191 @@
+-- 1) As a one‐off query for route 170406
+SELECT
+  s.hc                           AS hc,
+  r.orig                         AS orig,
+  CONCAT(LPAD(s.dh, 2, '0'),
+         LPAD(s.dm, 2, '0'))     AS dep
+FROM service AS s
+JOIN route   AS r  ON s.hc = r.hc
+WHERE s.uid = '170406'
+ORDER BY s.dh, s.dm
+;
+
+-- 2) To create a persistent view called trainLEV:
+CREATE VIEW trainLEV AS
+SELECT
+  s.hc                           AS hc,
+  r.orig                         AS orig,
+  CONCAT(LPAD(s.dh, 2, '0'),
+         LPAD(s.dm, 2, '0'))     AS dep
+FROM service AS s
+JOIN route   AS r  ON s.hc = r.hc
+WHERE s.uid = '170406'
+ORDER BY s.dh, s.dm
+;
+
+
+-- 1) One-off query (with ordering in the outer SELECT)
+SELECT
+  s.hc                          AS hc,
+  r.orig                        AS orig,
+  CONCAT(
+    LPAD(s.dh, 2, '0'),
+    LPAD(s.dm, 2, '0')
+  )                              AS dep
+FROM service AS s
+JOIN route   USING (hc)          -- natural join on hc :contentReference[oaicite:0]{index=0}&#8203;:contentReference[oaicite:1]{index=1}
+WHERE s.uid = '170406'
+ORDER BY dep
+;
+
+-- 2) Persistent view (no ORDER BY; explicit column list) :contentReference[oaicite:2]{index=2}&#8203;:contentReference[oaicite:3]{index=3}
+CREATE VIEW trainLEV (hc, orig, dep) AS
+SELECT
+  s.hc                          AS hc,
+  r.orig                        AS orig,
+  CONCAT(
+    LPAD(s.dh, 2, '0'),
+    LPAD(s.dm, 2, '0')
+  )                              AS dep
+FROM service AS s
+JOIN route   USING (hc)
+WHERE s.uid = '170406'
+;
+
+
+
+
+-- One‐off query, listing all services departing Edinburgh (EDB) in ascending departure time
+SELECT
+  s.hc                                           AS hc,
+  CONCAT(LPAD(s.dh, 2, '0'),
+         LPAD(s.dm, 2, '0'))                     AS dep,
+  s.pl                                           AS pl,
+  COALESCE(next_st.code, dest_st.code)           AS dest,
+  COUNT(c.uid)                                   AS len,
+  s.toc                                          AS toc
+FROM service AS s
+JOIN route   AS r     USING (hc)
+JOIN station AS st1   ON st1.loc = r.orig
+LEFT JOIN plan    AS pn  ON pn.hc  = s.hc
+                         AND pn.frm = st1.loc
+LEFT JOIN station AS next_st ON next_st.loc = pn.loc
+LEFT JOIN plan    AS pd  ON pd.hc  = s.hc
+                         AND pd.ddh = 'ω'
+LEFT JOIN station AS dest_st ON dest_st.loc = pd.loc
+LEFT JOIN coach   AS c     ON c.uid   = s.uid
+WHERE st1.code = 'EDB'
+GROUP BY
+  s.hc, s.dh, s.dm, s.pl, s.toc,
+  next_st.code, dest_st.code
+ORDER BY
+  s.dh, s.dm
+;
+
+-- Persistent view definition
+CREATE VIEW scheduleEDB (
+  hc, dep, pl, dest, len, toc
+) AS
+SELECT
+  s.hc                                           AS hc,
+  CONCAT(LPAD(s.dh, 2, '0'),
+         LPAD(s.dm, 2, '0'))                     AS dep,
+  s.pl                                           AS pl,
+  COALESCE(next_st.code, dest_st.code)           AS dest,
+  COUNT(c.uid)                                   AS len,
+  s.toc                                          AS toc
+FROM service AS s
+JOIN route   AS r     USING (hc)
+JOIN station AS st1   ON st1.loc = r.orig
+LEFT JOIN plan    AS pn  ON pn.hc  = s.hc
+                         AND pn.frm = st1.loc
+LEFT JOIN station AS next_st ON next_st.loc = pn.loc
+LEFT JOIN plan    AS pd  ON pd.hc  = s.hc
+                         AND pd.ddh = 'ω'
+LEFT JOIN station AS dest_st ON dest_st.loc = pd.loc
+LEFT JOIN coach   AS c     ON c.uid   = s.uid
+WHERE st1.code = 'EDB'
+GROUP BY
+  s.hc, s.dh, s.dm, s.pl, s.toc,
+  next_st.code, dest_st.code
+;
+
+//////////////////////
+
+CREATE VIEW scheduleEDB AS
+SELECT
+  s.hc                                            AS hc,
+  -- four-digit departure code; or use MAKETIME(s.dh,s.dm,0) for a TIME column      
+  CONCAT(LPAD(s.dh,2,'0'), LPAD(s.dm,2,'0'))      AS dep,
+  s.pl                                            AS pl,
+  -- next stop’s CRS code, ordered by ddh/ddm
+  (
+    SELECT st2.code
+    FROM plan   p2
+    JOIN station st2 ON st2.loc = p2.loc
+    WHERE p2.hc  = s.hc
+      AND p2.frm = 'Edinburgh'    /* r.orig = 'EDB' */
+    ORDER BY p2.ddh, p2.ddm
+    LIMIT 1
+  )                                               AS dest,
+  -- coach count per train
+  (
+    SELECT COUNT(*) 
+    FROM coach c 
+    WHERE c.uid = s.uid
+  )                                               AS len,
+  s.toc                                           AS toc
+FROM service AS s
+JOIN route   AS r USING (hc)
+WHERE r.orig = 'EDB'
+;
+
+////////////////
+CREATE VIEW scheduleEDB AS
+SELECT
+  s.hc                                          AS hc,
+  -- unchanged: zero-padded departure code
+  CONCAT(LPAD(s.dh,2,'0'),LPAD(s.dm,2,'0'))     AS dep,
+  s.pl                                          AS pl,
+
+  -- ▶ COMBINED next-stop and terminus subqueries via COALESCE
+  COALESCE(
+    /* ▶ NEXT STOP: look up the very first plan after EDB */
+    (
+      SELECT st2.code
+      FROM plan    p2
+      JOIN station st2 ON st2.loc = p2.loc
+      WHERE p2.hc  = s.hc
+        -- ▶ REPLACED hard-coded 'Edinburgh' with st1.loc
+        AND p2.frm = st1.loc    
+      ORDER BY p2.ddh, p2.ddm
+      LIMIT 1
+    ),
+    /* ▶ TERMINUS: fall back to where ddh = 'ω' */
+    (
+      SELECT st3.code
+      FROM plan    p3
+      JOIN station st3 ON st3.loc = p3.loc
+      WHERE p3.hc  = s.hc
+        AND p3.ddh = 'ω'
+      LIMIT 1
+    )
+  )                                              AS dest,
+
+  -- unchanged: simple coach-count subquery
+  (
+    SELECT COUNT(*) 
+    FROM coach c 
+    WHERE c.uid = s.uid
+  )                                              AS len,
+
+  s.toc                                         AS toc
+
+FROM service AS s
+
+  -- ▶ NEW JOIN to station to turn r.orig ('EDB') into its location name
+  JOIN route   AS r   USING (hc)
+  JOIN station AS st1 ON st1.loc = r.orig      
+
+WHERE st1.code = 'EDB'   -- ▶ FILTER on CRS code rather than on route.orig
+;
